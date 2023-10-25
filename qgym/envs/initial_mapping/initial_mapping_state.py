@@ -23,7 +23,9 @@ from qgym import spaces
 from qgym.templates.state import State
 
 
-class InitialMappingState(State[Dict[str, NDArray[np.int_]], NDArray[np.int_]]):
+class InitialMappingState(
+    State[Dict[str, NDArray[np.int_] | NDArray[np.float_]], NDArray[np.int_]]
+):
     """The ``InitialMappingState`` class."""
 
     __slots__ = (
@@ -60,11 +62,23 @@ class InitialMappingState(State[Dict[str, NDArray[np.int_]], NDArray[np.int_]]):
         self.steps_done: int = 0
         """Number of steps done since the last reset."""
 
-        self.graphs = {
-            "connection": {
+        self.fidelity = False  # whether edges include fidelity
+        for _, _, wt in connection_graph.edges.data("weight"):
+            if type(wt) is not np.int_:
+                self.fidelity = True
+                break
+        if self.fidelity:
+            connection = {
+                "graph": deepcopy(connection_graph),
+                "matrix": nx.to_numpy_array(connection_graph, dtype=np.float_),
+            }
+        else:
+            connection = {
                 "graph": deepcopy(connection_graph),
                 "matrix": nx.to_numpy_array(connection_graph, dtype=np.int8),
-            },
+            }
+        self.graphs = {
+            "connection": connection,
             "interaction": {
                 "graph": deepcopy(interaction_graph),
                 "matrix": nx.to_numpy_array(interaction_graph, dtype=np.int8).flatten(),
@@ -96,7 +110,19 @@ class InitialMappingState(State[Dict[str, NDArray[np.int_]], NDArray[np.int_]]):
         mapping_space = spaces.MultiDiscrete(
             nvec=[self.n_nodes + 1] * self.n_nodes, rng=self.rng
         )
-        interaction_matrix_space = spaces.MultiBinary(self.n_nodes**2, rng=self.rng)
+
+        if self.fidelity:
+            interaction_matrix_space = spaces.Box(
+                low=0,
+                high=1,
+                shape=(self.n_nodes, self.n_nodes),
+                dtype=np.float_,
+                rng=self.rng,
+            )
+        else:
+            interaction_matrix_space = spaces.MultiBinary(
+                self.n_nodes**2, rng=self.rng
+            )
         return spaces.Dict(
             rng=self.rng,
             mapping=mapping_space,
@@ -145,22 +171,6 @@ class InitialMappingState(State[Dict[str, NDArray[np.int_]], NDArray[np.int_]]):
         self.mapped_qubits = {"physical": set(), "logical": set()}
 
         return self
-
-    def add_random_edge_weights(self) -> None:
-        """Add random weights to the connection graph and interaction graph."""
-        for node1, node2 in self.graphs["connection"]["graph"].edges():
-            weight = self.rng.gamma(2, 2) / 4
-            self.graphs["connection"]["graph"].edges[node1, node2]["weight"] = weight
-        self.graphs["connection"]["matrix"] = nx.to_numpy_array(
-            self.graphs["connection"]["graph"]
-        )
-
-        for node1, node2 in self.graphs["interaction"]["graph"].edges():
-            weight = self.rng.gamma(2, 2) / 4
-            self.graphs["interaction"]["graph"].edges[node1, node2]["weight"] = weight
-        self.graphs["interaction"]["matrix"] = nx.to_numpy_array(
-            self.graphs["interaction"]["graph"]
-        ).flatten()
 
     def update_state(self, action: NDArray[np.int_]) -> InitialMappingState:
         """Update the state (in place) of this environment using the given action.
@@ -214,7 +224,12 @@ class InitialMappingState(State[Dict[str, NDArray[np.int_]], NDArray[np.int_]]):
         Returns:
             Optional debugging info for the current state.
         """
-        return {"Steps done": self.steps_done}
+        return {
+            "Steps done": self.steps_done,
+            "Mapping": self.mapping,
+            "Mapping Dictionary": self.mapping_dict,
+            "Mapped Qubits": self.mapped_qubits,
+        }
 
     @property
     def n_nodes(self) -> int:
